@@ -1,0 +1,141 @@
+#!/usr/bin/env ruby
+#
+# Initial Author: Ronen Botzer 3/14/13
+# Latest Modification: Ronen Botzer, 3/15/13
+# TODO: present a list of name search results
+# TODO: handle the crashing - new ruby version perhaps
+# TODO: Left join name
+#
+require 'rubygems'
+require 'mysql'
+require 'optparse'
+require 'yaml'
+
+
+def get_config(config_path = nil)
+  if File.readable?(config_path) && File.size(config_path) > 0
+    begin
+      YAML::load(IO.read(config_path))
+    rescue
+      # we failed to parse :(
+      raise "Error: failed to parse configuration file"
+    end
+  else
+    # we did not find existent and non zero config file
+    raise "Error: configuration file does not exist or is empty"
+  end
+end
+
+class Item
+  attr_accessor :lot, :description, :value, :final_bid, :deductible
+
+  def initialize(lot, desc, value, final_bid)
+    @lot = lot
+    @description = desc
+    @value = value.to_f
+    @final_bid = final_bid.to_f
+    @deductible = final_bid > value ? final_bid - value : 0.0
+  end
+end
+
+class Receipt
+  attr_accessor :id, :total, :deductible, :items, :name, :address1, :address2, :phone
+
+  def initialize
+    @total = 0.0
+    @deductible = 0.0
+    @items = []
+  end
+
+  def add(item)
+    @items << item
+  end
+end
+
+class Task
+  attr_accessor :cmd, :pid, :output, :exitstatus, :thread
+  def initialize(cmd)
+    @cmd = cmd
+    queue = Queue.new
+    @thread = Thread.new(queue) {|q|
+      pipe = IO.popen(cmd + " 2>&1")
+      q.push(pipe)
+      q.push(pipe.pid)
+      self.pid = pipe.pid
+      begin
+        self.output = pipe.readlines
+        pipe.close
+        self.exitstatus = $?.exitstatus
+      rescue => e
+        q.push e
+      end
+    }
+    queue.clear
+  end
+  def join
+    thread.join
+  end
+end
+
+def to_currency(number)
+  sprintf('$%0.2f', number)
+end
+
+bidder_id = ARGV[0]
+receipt = Receipt.new
+begin
+  config = get_config(File.join(File.dirname(__FILE__), 'config.yaml'))
+  cred = config['database']
+  Mysql.connect(cred['host'], cred['user'], cred['password'], cred['database']) do |db|
+  if (bidder_id.to_i == 0)
+    # look up the bidder ID by name:
+    name = bidder_id
+    bidder_id = nil
+    sql = "SELECT id FROM bidders WHERE name LIKE '%#{name}%'"
+    db.query(sql) do |res|
+      puts res.num_rows
+      row = res.fetch_row
+      bidder_id = row[0]
+    end
+    unless bidder_id
+      puts "I could not fine a bidder named #{name}."
+      exit(2)
+    end
+  end
+  items = []
+  sql = "SELECT * FROM bidders b LEFT JOIN items i ON b.id=i.bidder_id WHERE b.id=#{bidder_id}"
+  has_bidder = false
+  db.query(sql).each_hash do |row|
+    unless has_bidder
+      receipt.id = row['bidder_id']
+      receipt.name = row['name']
+      receipt.address1 = row['address1']
+      receipt.address2 = row['address2']
+      receipt.phone = row['phone']
+      has_bidder = true
+    end
+    item = Item.new(row['lot'], row['description'], row['value'].to_f, row['final_bid'].to_f)
+    receipt.total += row['final_bid'].to_f
+    receipt.deductible = receipt.deductible + item.deductible
+    receipt.add(item)
+  end
+  end
+rescue MysqlError => e
+  puts "Mysql error #{e.errno}: #{e.error}"
+  db.close if db
+  exit(3)
+rescue Exception => e
+  puts e.message
+  puts e.backtrace.join("\n")
+  exit(4)
+end
+db = nil
+
+File.open("data-#{bidder_id}.yaml", 'w') do |f|
+  dump = YAML::dump(receipt)
+  f.puts dump
+end
+
+puts bidder_id
+exit(0)
+

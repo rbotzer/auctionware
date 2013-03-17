@@ -1,0 +1,241 @@
+#!/usr/bin/env ruby
+#
+# Initial Author: Ronen Botzer 3/14/13
+# Latest Modification: Ronen Botzer, 3/15/13
+# TODO: handle the crashing - new ruby version perhaps
+#
+require 'rubygems'
+require 'mysql'
+require 'optparse'
+require 'prawn'
+require 'yaml'
+
+options = {
+    :name => nil,
+    :bidder => nil
+}
+
+OptionParser.new do |opts|
+    # help header
+    opts.banner = " Usage: receipt_generator [options]\n"
+    opts.separator " Generates an auction receipt for a given user as a PDF\n"
+
+    opts.on("-n", "--name STRING", "Enter the name of the bidder") do |n|
+        options[:name] = n
+    end
+
+    opts.on("-b", "--bidder NUMBER", "The bidder's number") do |b|
+        options[:bidder] = b.to_i
+    end
+    # parsing 'help' option if present
+    opts.on_tail("-h", "--help", "Show this message") do
+        puts opts
+        exit
+    end
+end.parse!
+
+def get_config(config_path = nil)
+  if File.readable?(config_path) && File.size(config_path) > 0
+    begin
+      YAML::load(IO.read(config_path))
+    rescue
+      # we failed to parse :(
+      raise "Error: failed to parse configuration file"
+    end
+  else
+    # we did not find existent and non zero config file
+    raise "Error: configuration file does not exist or is empty"
+  end
+end
+
+class Item
+  attr_accessor :lot, :description, :value, :final_bid, :deductible
+
+  def initialize(lot, desc, value, final_bid)
+    @lot = lot
+    @description = desc
+    @value = value.to_f
+    @final_bid = final_bid.to_f
+    @deductible = final_bid > value ? final_bid - value : 0.0
+  end
+end
+
+class Receipt
+  attr_accessor :id, :total, :deductible, :items, :name, :address1, :address2, :phone
+
+  def initialize
+    @total = 0.0
+    @deductible = 0.0
+    @items = []
+  end
+
+  def add(item)
+    @items << item
+  end
+end
+
+class Task
+  attr_accessor :cmd, :pid, :output, :exitstatus, :thread
+  def initialize(cmd)
+    @cmd = cmd
+    queue = Queue.new
+    @thread = Thread.new(queue) {|q|
+      pipe = IO.popen(cmd + " 2>&1")
+      q.push(pipe)
+      q.push(pipe.pid)
+      self.pid = pipe.pid
+      begin
+        self.output = pipe.readlines
+        pipe.close
+        self.exitstatus = $?.exitstatus
+      rescue => e
+        q.push e
+      end
+    }
+    queue.clear
+  end
+  def join
+    thread.join
+  end
+end
+
+def to_currency(number)
+  sprintf('$%0.2f', number)
+end
+
+unless (options[:name] || options[:bidder])
+  puts "We need a name or bidder ID.  For help, type: ./receipt_generator --help"
+  exit(1)
+end
+
+receipt = Receipt.new
+begin
+  config = get_config(File.join(File.dirname(__FILE__), 'config.yaml'))
+  cred = config['database']
+  db = Mysql.connect(cred['host'], cred['user'], cred['password'], cred['database'])
+
+  if (options[:name])
+    # look up the bidder ID by name:
+    sql = "SELECT id FROM bidders WHERE name LIKE '%#{options[:name]}%'"
+    bidder_id = nil
+    db.query(sql) do |res|
+      puts res.num_rows
+      row = res.fetch_row
+      bidder_id = row[0]
+    end
+    unless bidder_id
+      puts "I could not fine a bidder named #{options[:name]}."
+      exit(2)
+    end
+  else
+    bidder_id = options[:bidder]
+  end
+
+  items = []
+  sql = "SELECT * FROM bidders b LEFT JOIN items i ON b.id=i.bidder_id WHERE b.id=#{bidder_id}"
+  has_bidder = false
+  db.query(sql).each_hash do |row|
+    unless has_bidder
+      receipt.id = row['bidder_id']
+      receipt.name = row['name']
+      receipt.address1 = row['address1']
+      receipt.address2 = row['address2']
+      receipt.phone = row['phone']
+      has_bidder = true
+    end
+    item = Item.new(row['lot'], row['description'], row['value'].to_f, row['final_bid'].to_f)
+    receipt.total += row['final_bid'].to_f
+    receipt.deductible = receipt.deductible + item.deductible
+    receipt.add(item)
+  end
+  db.close
+rescue MysqlError => e
+  puts "Mysql error #{e.errno}: #{e.error}"
+  db.close if db
+  exit(3)
+rescue Exception => e
+  puts e.message
+  puts e.backtrace.join("\n")
+  exit(4)
+ensure
+  db.close if db
+end
+db = nil
+
+require 'pp'
+pp receipt
+
+begin
+nbsp = Prawn::Text::NBSP
+Prawn::Document.generate("bidder-#{bidder_id}.pdf", :background => "event_logo.jpg", :margin => 25) do |pdf|
+  pdf.font("Courier") do
+    pdf.move_down(100)
+begin
+    address = [
+      [ pdf.make_cell(:content => "Name#{nbsp}", :width => 50, :font_style => :bold), receipt.name ],
+      [ pdf.make_cell(:content => "Address#{nbsp}", :width => 60, :font_style => :bold), receipt.address1 ],
+      [ "", receipt.address2 ],
+      [ pdf.make_cell(:content => "Phone#{nbsp}", :width => 50, :font_style => :bold), receipt.phone ],
+    ]
+    pdf.table(address, :row_colors => ["FFFFFF","2996CC"], :cell_style => {:padding => 5 } )
+    pdf.move_down(10)
+    address = nil
+
+    pdf.text "Bidder: #{receipt.id}", :size => 12, :style => :bold
+    pdf.move_down(6)
+rescue Exception => e
+  puts "After address and bidder: " 
+  puts e
+end
+    items = [
+      [
+        pdf.make_cell(:content => "Lot#{nbsp}", :font_style => :bold, :align => :center),
+        pdf.make_cell(:content => "Description#{nbsp}", :font_style => :bold ),
+        pdf.make_cell(:content => "Amount#{nbsp}", :font_style => :bold, :align => :center),
+      ]
+    ]
+    items += receipt.items.map do |item|
+      [
+        pdf.make_cell(:content => "#{item.lot}#{nbsp}", :align => :center),
+        item.description,
+        pdf.make_cell(:content => "#{to_currency(item.final_bid)}#{nbsp}", :align => :center),
+      ]
+    end
+begin
+    pdf.table(items, :row_colors => ["FFFFFF","2996CC"], :cell_style => {:padding => 5} )
+    pdf.move_down(10)
+rescue Exception => e
+  puts "After items: " 
+  puts e
+end
+    items = nil
+
+    begin
+    pdf.text "Total Amount: #{to_currency(receipt.total)}", :size => 12, :style => :bold
+    pdf.move_down(6)
+    pdf.text "Tax Deductible Amount: #{to_currency(receipt.deductible)}", :size => 12, :style => :bold
+    pdf.text "The tax-deductible portion of your purchases is the difference between the amount paid and the fair market value.", :size => 8
+rescue Exception => e
+  puts "Ran into an exception after the total and deductible: "
+  puts e
+end
+
+    begin
+    pdf.bounding_box([0, 50], :width => pdf.bounds.width, :height => pdf.cursor, :align => :center) do
+      pdf.text "The Spring Hill Parent Club would like to thank you for your generous support!", :size => 12, :style => :bold, :align => :center
+      pdf.text "Our non-profit tax identification number is 26-1712547", :size => 12, :style => :bold, :align => :center
+      pdf.move_down(12)
+      pdf.text "March 16, 2013", :size => 12, :style => :bold, :align => :center
+    end
+rescue Exception => e
+  puts "Ran into an exception after thank you box: " 
+  puts e
+end
+  end
+end
+rescue Exception => e
+  puts "Ran into an exception: "
+  puts e
+end
+puts "Done"
+exit(0)

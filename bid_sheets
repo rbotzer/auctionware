@@ -1,0 +1,180 @@
+#!/usr/bin/env ruby
+#
+# Initial Author: Ronen Botzer 3/14/13
+# Latest Modification: Ronen Botzer, 3/15/13
+# TODO: present a list of name search results
+# TODO: handle the crashing - new ruby version perhaps
+# TODO: Left join name
+#
+require 'rubygems'
+require 'optparse'
+require 'prawn'
+require 'yaml'
+
+options = {
+    :name => nil,
+    :bidder => nil
+}
+
+OptionParser.new do |opts|
+    # help header
+    opts.banner = " Usage: receipt_generator [options]\n"
+    opts.separator " Generates an auction receipt for a given user as a PDF\n"
+
+    opts.on("-n", "--name STRING", "Enter the name of the bidder") do |n|
+        options[:name] = n
+    end
+
+    opts.on("-b", "--bidder NUMBER", "The bidder's number") do |b|
+        options[:bidder] = b.to_i
+    end
+    # parsing 'help' option if present
+    opts.on_tail("-h", "--help", "Show this message") do
+        puts opts
+        exit
+    end
+end.parse!
+
+def get_config(config_path = nil)
+  if File.readable?(config_path) && File.size(config_path) > 0
+    begin
+      YAML::load(IO.read(config_path))
+    rescue
+      # we failed to parse :(
+      raise "Error: failed to parse configuration file"
+    end
+  else
+    # we did not find existent and non zero config file
+    raise "Error: configuration file does not exist or is empty"
+  end
+end
+
+class Lot
+  attr_accessor :id, :name, :description, :value, :minbid, :is_empty
+
+  def initialize(id, name, desc, value, minibid)
+    @id = id.to_i
+    @name = name
+    @description = desc
+    @value = value.to_f
+    @minbid = minibid.to_f
+    @is_empty = false
+  end
+
+  def clear
+    @id = ''
+    @name = ''
+    @description = ''
+    @value = '     '
+    @minbid = '     '
+    @is_empty = true
+  end
+
+  def empty?
+    @is_empty
+  end
+end
+
+def to_currency(number)
+  if number.class == String
+    ''
+  elsif number > 0
+    sprintf('$%0.2f', number)
+  else
+    "Priceless"
+  end
+end
+
+def increment_str(amount)
+  if amount.class == String
+    amount
+  elsif amount < 100
+    "Increase bids in $5 increments or more"
+  else
+    "Increase bids in $10 increments or more"
+  end
+end
+
+def sanitize(str)
+  if (str[0] != '"')
+    str
+  else
+    str = str[1...-1]
+    str.gsub(/\\"/, '"')
+  end
+end
+
+data = IO.read((File.join(File.dirname(__FILE__), 'items_view.tsv'))).split("\n")
+
+lots = []
+data.each do |line|
+  d = line.strip.split("\t")
+  name = sanitize(d[1])
+  desc = sanitize(d[2])
+  lots << Lot.new(d[0],name,desc,d[3],d[4])
+end
+# add twenty extra empty slips
+(1..20).each do
+  l = Lot.allocate
+  l.clear
+  lots << l
+end
+
+i = 0
+begin
+  nbsp = Prawn::Text::NBSP
+  Prawn::Document.generate("auction-cards.pdf", :margin => 25) do |pdf|
+    pdf.font("Courier") do
+      while i < (lots.size - 2)
+      lot = lots[i]
+      pdf.bounding_box([0, 700], :width => 280, :height => 600) do
+        pdf.text "Silent Auction Bidding Card#{nbsp}##{lot.id}", :size => 14, :style => :bold
+        pdf.move_down(4)
+        pdf.text "Package Name:", :size => 12, :style => :bold
+        pdf.move_down(2)
+        pdf.text lot.name, :size => 10
+        pdf.move_down(10) if lot.name == ''
+        pdf.move_down(2)
+        pdf.text "Description:", :size => 12, :style => :bold
+        pdf.move_down(2)
+        pdf.text lot.description, :size => 10
+        pdf.move_down(12) if lot.description == ''
+        pdf.move_down(4)
+        pdf.text "Value:#{nbsp}#{to_currency(lot.value)}  Starting Bid:#{nbsp}#{to_currency(lot.minbid)}", :size => 12, :style => :bold
+        pdf.move_down(2)
+        pdf.text "Bids:", :size => 12, :style => :bold
+        pdf.text "#{increment_str(lot.value)}", :size => 8, :style => :bold
+        pdf.move_down(2)
+        pdf.table([["Bidder#{nbsp}#",  "Bid:#{nbsp}$"]] * 20, :cell_style => { :borders => [:bottom], :border_width => 1, :width => 120 }) 
+      end
+      i += 1
+      lot = lots[i]
+      pdf.bounding_box([300, 700], :width => 280, :height => 600) do
+        pdf.text "Silent Auction Bidding Card#{nbsp}##{lot.id}", :size => 14, :style => :bold
+        pdf.move_down(4)
+        pdf.text "Package Name:", :size => 12, :style => :bold
+        pdf.move_down(2)
+        pdf.text lot.name, :size => 10
+        pdf.move_down(10) if lot.name == ''
+        pdf.move_down(2)
+        pdf.text "Description:", :size => 12, :style => :bold
+        pdf.move_down(2)
+        pdf.text lot.description, :size => 10
+        pdf.move_down(12) if lot.description == ''
+        pdf.move_down(4)
+        pdf.text "Value:#{nbsp}#{to_currency(lot.value)}  Starting Bid:#{nbsp}#{to_currency(lot.minbid)}", :size => 12, :style => :bold
+        pdf.move_down(2)
+        pdf.text "Bids:", :size => 12, :style => :bold
+        pdf.text "#{increment_str(lot.value)}", :size => 8, :style => :bold
+        pdf.move_down(2)
+        pdf.table([["Bidder#{nbsp}#",  "Bid:#{nbsp}$"]] * 20, :cell_style => { :borders => [:bottom], :border_width => 1, :width => 120 }) 
+      end
+      i += 1
+      pdf.start_new_page
+      end
+    end
+    pdf.start_new_page
+  end
+end
+puts "Done"
+exit(0)

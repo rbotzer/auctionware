@@ -173,11 +173,12 @@ Prawn::Document.generate("bidder-#{bidder_id}.pdf", :background => "event_logo.j
 begin
     address = [
       [ pdf.make_cell(:content => "Name#{nbsp}", :width => 50, :font_style => :bold), receipt.name ],
-      [ pdf.make_cell(:content => "Address#{nbsp}", :width => 60, :font_style => :bold), receipt.address1 ],
-      [ "", receipt.address2 ],
-      [ pdf.make_cell(:content => "Phone#{nbsp}", :width => 50, :font_style => :bold), receipt.phone ],
     ]
-    pdf.table(address, :row_colors => ["FFFFFF","2996CC"], :cell_style => {:padding => 5 } )
+    address << [ pdf.make_cell(:content => "Address#{nbsp}", :width => 60, :font_style => :bold), receipt.address1 ] if receipt.address1
+    address << [ "", receipt.address2 ] if receipt.address1 && receipt.address2
+    address << [ pdf.make_cell(:content => "Phone#{nbsp}", :width => 50, :font_style => :bold), receipt.phone ] if receipt.phone
+
+    pdf.table(address, :row_colors => ["FFFFFF","FFFFFF"], :cell_style => {:padding => 5 } )
     pdf.move_down(10)
     address = nil
 
@@ -202,7 +203,7 @@ end
       ]
     end
 begin
-    pdf.table(items, :row_colors => ["FFFFFF","2996CC"], :cell_style => {:padding => 5} )
+    pdf.table(items, :row_colors => ["FFFFFF","FFFFFF"], :cell_style => {:padding => 5} )
     pdf.move_down(10)
 rescue Exception => e
   puts "After items: " 
@@ -220,13 +221,13 @@ rescue Exception => e
   puts e
 end
 
-    begin
-    pdf.bounding_box([0, 50], :width => pdf.bounds.width, :height => pdf.cursor, :align => :center) do
-      pdf.text "The Spring Hill Parent Club would like to thank you for your generous support!", :size => 12, :style => :bold, :align => :center
-      pdf.text "Our non-profit tax identification number is 26-1712547", :size => 12, :style => :bold, :align => :center
-      pdf.move_down(12)
-      pdf.text "March 16, 2013", :size => 12, :style => :bold, :align => :center
-    end
+begin
+  pdf.bounding_box([0, 50], :width => pdf.bounds.width, :height => pdf.cursor, :align => :center) do
+    pdf.text "The Spring Hill Parent Club would like to thank you for your generous support!", :size => 12, :style => :bold, :align => :center
+    pdf.text "Our non-profit tax identification number is 26-1712547", :size => 12, :style => :bold, :align => :center
+    pdf.move_down(12)
+    pdf.text "March 11, 2017", :size => 12, :style => :bold, :align => :center
+  end
 rescue Exception => e
   puts "Ran into an exception after thank you box: " 
   puts e

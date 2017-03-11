@@ -1,0 +1,64 @@
+#!/usr/bin/env ruby
+#
+# Initial Author: Ronen Botzer 3/14/14
+# Latest Modification: Ronen Botzer, 3/14/14
+#
+require 'rubygems'
+require 'optparse'
+require 'csv'
+
+OptionParser.new do |opts|
+    # help header
+    opts.banner = " Usage: items_generator \n"
+    opts.separator " Generates the tsv source from the lot sheet csv\n"
+
+    # parsing 'help' option if present
+    opts.on_tail("-h", "--help", "Show this message") do
+        puts opts
+        exit
+    end
+end.parse!
+
+def to_currency(number)
+  number = '0.00' if number.nil?
+  number.gsub!(/\$/, '')
+  number.gsub!(/,/, '')
+  if number.to_f > 0.0
+    sprintf('%0.2f', number)
+  else
+    "0.00"
+  end
+end
+
+def sanitize(str)
+  if (str[0] != '"')
+    str
+  else
+    str = str[1...-1]
+    str.gsub(/\\"/, '"')
+  end
+end
+
+require 'pp'
+File.open("./a.csv", 'r') do |f|
+    f.each_line do |line|
+        line = line.strip
+        next if line == ''
+        lot,item,desc,val,donor,done = CSV.parse_line(line)
+        next unless lot
+        if item
+            item = item[0..-1] if item[0] == '"'
+            item.gsub!(/\"\"/, '"')
+        end
+        if desc
+            desc = desc[0..-1] if desc[0] == '"'
+            desc.gsub!(/\"\"/, '"')
+        end
+        val = to_currency(val)
+        min = to_currency("#{(val.to_f * 0.40).ceil}")
+        now = to_currency("#{(val.to_f * 1.1).ceil}")
+        #puts '=========================================='
+        puts "#{lot}\t#{item}\t#{desc}\t#{val}\t#{min}\t#{now}"
+    end
+end
+

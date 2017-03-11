@@ -1,10 +1,7 @@
 #!/usr/bin/env ruby
 #
 # Initial Author: Ronen Botzer 3/14/13
-# Latest Modification: Ronen Botzer, 3/15/13
-# TODO: present a list of name search results
-# TODO: handle the crashing - new ruby version perhaps
-# TODO: Left join name
+# Latest Modification: Ronen Botzer, 3/10/14
 #
 require 'rubygems'
 require 'optparse'
@@ -12,21 +9,16 @@ require 'prawn'
 require 'yaml'
 
 options = {
-    :name => nil,
-    :bidder => nil
+    :path => nil
 }
 
 OptionParser.new do |opts|
     # help header
-    opts.banner = " Usage: receipt_generator [options]\n"
-    opts.separator " Generates an auction receipt for a given user as a PDF\n"
+    opts.banner = " Usage: bid_sheets [options]\n"
+    opts.separator " Generates bid sheets from the tsv source as a single PDF\n"
 
-    opts.on("-n", "--name STRING", "Enter the name of the bidder") do |n|
-        options[:name] = n
-    end
-
-    opts.on("-b", "--bidder NUMBER", "The bidder's number") do |b|
-        options[:bidder] = b.to_i
+    opts.on("-p", "--path STRING", "Location of the tsv source file") do |n|
+        options[:path] = n
     end
     # parsing 'help' option if present
     opts.on_tail("-h", "--help", "Show this message") do
@@ -50,14 +42,25 @@ def get_config(config_path = nil)
 end
 
 class Lot
-  attr_accessor :id, :name, :description, :value, :minbid, :is_empty
+  attr_accessor :id, :name, :description, :donor, :value, :minbid, :bidinc, :buynow, :is_empty
 
-  def initialize(id, name, desc, value, minibid)
+  def initialize(id, name, desc, donor, value)
     @id = id.to_i
     @name = name
     @description = desc
-    @value = value.to_f
-    @minbid = minibid.to_f
+    @donor = donor
+    if value.to_i > 0
+      @value = value
+      @minbid = (value.to_f * 0.40).floor.to_i
+      @bidinc = (value.to_f * 0.10).floor.to_i
+      @buynow = (value.to_f * 1.25).floor.to_i
+      @value = "$#{value}"
+    else
+      @value = 'Priceless'
+      @minbid = 40
+      @bidinc = '     '
+      @buynow = 0
+    end
     @is_empty = false
   end
 
@@ -65,13 +68,24 @@ class Lot
     @id = ''
     @name = ''
     @description = ''
+    @donor = ''
     @value = '     '
     @minbid = '     '
+    @bidinc = '     '
+    @buynow = '     '
     @is_empty = true
   end
 
   def empty?
     @is_empty
+  end
+
+  def bidinc_s()
+    if @value != 'Priceless'
+      "Increase bids in $#{@bidinc.ceil.to_s} increments or more"
+    else
+      "      "
+    end
   end
 end
 
@@ -79,54 +93,68 @@ def to_currency(number)
   if number.class == String
     ''
   elsif number > 0
-    sprintf('$%0.2f', number)
+    "$#{number.to_s}"
   else
     "Priceless"
   end
 end
 
-def increment_str(amount)
-  if amount.class == String
-    amount
-  elsif amount < 100
-    "Increase bids in $5 increments or more"
-  else
-    "Increase bids in $10 increments or more"
-  end
-end
-
 def sanitize(str)
-  if (str[0] != '"')
+  if str.nil?
+      ''
+  elsif str.length == 0
+      ''
+  elsif (str[0].ord != 34)
     str
   else
-    str = str[1...-1]
-    str.gsub(/\\"/, '"')
+    #str = str[1...-1]
+    str.gsub!(/\\"/, '"')
+    str.gsub!(/"$/, '')
+    str.gsub!(/^"/, '')
   end
 end
 
-data = IO.read((File.join(File.dirname(__FILE__), 'items_view.tsv'))).split("\n")
+unless (options[:path])
+    options[:path] = File.join(File.dirname(__FILE__), 'items_view.tsv')
+end
+data = IO.read(options[:path]).split("\n")
+puts data.count
 
 lots = []
+l = 1
 data.each do |line|
+  puts "parsing line number #{l}"
+  l += 1
   d = line.strip.split("\t")
   name = sanitize(d[1])
   desc = sanitize(d[2])
-  lots << Lot.new(d[0],name,desc,d[3],d[4])
-end
-# add twenty extra empty slips
-(1..20).each do
-  l = Lot.allocate
-  l.clear
-  lots << l
+  donor = sanitize(d[3])
+  minbid = d[5]
+  bidinc = d[6]
+  buynow = d[7]
+  lot = Lot.new(d[0],name,desc,donor,d[4])
+  lot.minbid = minbid.to_i if minbid
+  lot.bidinc = bidinc.to_i if bidinc
+  lot.buynow = buynow.to_i if buynow
+  lots << lot
 end
 
 i = 0
 begin
   nbsp = Prawn::Text::NBSP
   Prawn::Document.generate("auction-cards.pdf", :margin => 25) do |pdf|
-    pdf.font("Courier") do
-      while i < (lots.size - 2)
+    # Registering a single TTF font
+    pdf.font_families.update(
+     "Calibri" => {
+       :normal => "#{Prawn::DATADIR}/fonts/Calibri.ttf",
+       :italic => "#{Prawn::DATADIR}/fonts/CalibriItalic.ttf",
+       :bold   => "#{Prawn::DATADIR}/fonts/CalibriBold.ttf",
+     }
+    )
+    pdf.font("Calibri") do
+      while i < (lots.size)
       lot = lots[i]
+      puts "at "+i.to_s
       pdf.bounding_box([0, 700], :width => 280, :height => 600) do
         pdf.text "Silent Auction Bidding Card#{nbsp}##{lot.id}", :size => 14, :style => :bold
         pdf.move_down(4)
@@ -135,20 +163,34 @@ begin
         pdf.text lot.name, :size => 10
         pdf.move_down(10) if lot.name == ''
         pdf.move_down(2)
-        pdf.text "Description:", :size => 12, :style => :bold
+        pdf.text "Donor:", :size => 12, :style => :bold
         pdf.move_down(2)
-        pdf.text lot.description, :size => 10
-        pdf.move_down(12) if lot.description == ''
+        pdf.text lot.donor, :size => 10
+        pdf.move_down(12) if lot.donor == ''
         pdf.move_down(4)
-        pdf.text "Value:#{nbsp}#{to_currency(lot.value)}  Starting Bid:#{nbsp}#{to_currency(lot.minbid)}", :size => 12, :style => :bold
+        pdf.text "Value: #{nbsp}#{lot.value.to_s}  Starting Bid: #{nbsp}$#{lot.minbid.to_s}", :size => 12, :style => :bold
         pdf.move_down(2)
-        pdf.text "Bids:", :size => 12, :style => :bold
-        pdf.text "#{increment_str(lot.value)}", :size => 8, :style => :bold
-        pdf.move_down(2)
-        pdf.table([["Bidder#{nbsp}#",  "Bid:#{nbsp}$"]] * 20, :cell_style => { :borders => [:bottom], :border_width => 1, :width => 120 }) 
+        if lot.buynow > 0
+            pdf.text "Bids:#{nbsp * 16}Buy It Now: #{nbsp}$#{lot.buynow.to_s}", :size => 12, :style => :bold
+            #pdf.text "Bids:", :size => 12, :style => :bold
+            pdf.text "#{lot.bidinc_s}", :size => 8, :style => :bold
+            pdf.move_down(2)
+            pdf.table([["Bidder#{nbsp}#",  "Buy It Now"]], :cell_style => { :style=>:bold, :borders => [:bottom], :border_width => 1, :width => 120 }) 
+            pdf.move_down(2)
+        else
+            pdf.text "Bids:", :size => 12, :style => :bold
+            pdf.text "#{lot.bidinc_s}", :size => 8, :style => :bold
+            pdf.move_down(2)
+            pdf.table([["Bidder#{nbsp}#",  "Bid:#{nbsp}$"]], :cell_style => { :style=>:bold, :borders => [:bottom], :border_width => 1, :width => 120 }) 
+            pdf.move_down(2)
+        end
+        rows = 17
+        rows = 16 if lot.donor.size > 130 || lot.name.size > 40
+        pdf.table([["Bidder#{nbsp}#",  "Bid:#{nbsp}$"]] * rows, :cell_style => { :borders => [:bottom], :border_width => 1, :width => 120 }) 
       end
       i += 1
       lot = lots[i]
+      puts "at "+i.to_s
       pdf.bounding_box([300, 700], :width => 280, :height => 600) do
         pdf.text "Silent Auction Bidding Card#{nbsp}##{lot.id}", :size => 14, :style => :bold
         pdf.move_down(4)
@@ -157,23 +199,36 @@ begin
         pdf.text lot.name, :size => 10
         pdf.move_down(10) if lot.name == ''
         pdf.move_down(2)
-        pdf.text "Description:", :size => 12, :style => :bold
+        pdf.text "Donor:", :size => 12, :style => :bold
         pdf.move_down(2)
-        pdf.text lot.description, :size => 10
-        pdf.move_down(12) if lot.description == ''
+        pdf.text lot.donor, :size => 10
+        pdf.move_down(12) if lot.donor == ''
         pdf.move_down(4)
-        pdf.text "Value:#{nbsp}#{to_currency(lot.value)}  Starting Bid:#{nbsp}#{to_currency(lot.minbid)}", :size => 12, :style => :bold
+        pdf.text "Value: #{nbsp}#{lot.value.to_s}  Starting Bid: #{nbsp}$#{lot.minbid.to_s}", :size => 12, :style => :bold
         pdf.move_down(2)
-        pdf.text "Bids:", :size => 12, :style => :bold
-        pdf.text "#{increment_str(lot.value)}", :size => 8, :style => :bold
-        pdf.move_down(2)
-        pdf.table([["Bidder#{nbsp}#",  "Bid:#{nbsp}$"]] * 20, :cell_style => { :borders => [:bottom], :border_width => 1, :width => 120 }) 
+        if lot.buynow > 0
+            pdf.text "Bids:#{nbsp * 16}Buy It Now: #{nbsp}$#{lot.buynow.to_s}", :size => 12, :style => :bold
+            #pdf.text "Bids:", :size => 12, :style => :bold
+            pdf.text "#{lot.bidinc_s}", :size => 8, :style => :bold
+            pdf.move_down(2)
+            pdf.table([["Bidder#{nbsp}#",  "Buy It Now"]], :cell_style => { :style=>:bold, :borders => [:bottom], :border_width => 1, :width => 120 }) 
+            pdf.move_down(2)
+        else
+            pdf.text "Bids:", :size => 12, :style => :bold
+            pdf.text lot.bidinc_s, :size => 8, :style => :bold
+            pdf.move_down(2)
+            pdf.table([["Bidder#{nbsp}#",  "Bid:#{nbsp}$"]], :cell_style => { :style=>:bold, :borders => [:bottom], :border_width => 1, :width => 120 }) 
+            pdf.move_down(2)
+        end
+        rows = 17
+        rows = 16 if lot.donor.size > 130 || lot.name.size > 40
+        pdf.table([["Bidder#{nbsp}#",  "Bid:#{nbsp}$"]] * rows, :cell_style => { :borders => [:bottom], :border_width => 1, :width => 120 }) 
       end
       i += 1
-      pdf.start_new_page
+      pdf.start_new_page if i < lots.size
       end
     end
-    pdf.start_new_page
+    pdf.start_new_page if i < lots.size
   end
 end
 puts "Done"
